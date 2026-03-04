@@ -158,6 +158,8 @@ export interface AttackChain {
   name: string;
   severity: string;
   steps: string[];
+  impact?: string;
+  likelihood?: string;
 }
 
 export interface ComplianceGap {
@@ -165,6 +167,7 @@ export interface ComplianceGap {
   control: string;
   gap: string;
   severity: string;
+  hosts?: string[];
 }
 
 export interface RiskScoresResponse {

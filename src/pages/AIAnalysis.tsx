@@ -12,7 +12,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
   dashboardStats, vulnerabilities,
-  categoryBreakdown, hosts, severityDistribution
+  categoryBreakdown, hosts, severityDistribution,
+  hostRiskScores, osDistribution, serviceDistribution,
+  openServices, evidenceCategories, recommendations
 } from "@/data/auditData";
 import {
   Brain, Cpu, Zap, Target, Shield, AlertTriangle, Clock, Send,
@@ -26,8 +28,76 @@ import { useToast } from "@/hooks/use-toast";
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
   ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis,
-  CartesianGrid, Legend, AreaChart, Area, PieChart, Pie, Cell
+  CartesianGrid, Legend, AreaChart, Area, PieChart, Pie, Cell,
+  ScatterChart, Scatter, ZAxis, Treemap
 } from "recharts";
+
+// ─── Computed analytics from real data ─────────────────────────────
+
+// CVSS-weighted risk score
+const overallRiskScore = (() => {
+  const maxPossible = vulnerabilities.length * 10;
+  const actual = vulnerabilities.reduce((s, v) =>
+    s + (v.severity === "Critical" ? 10 : v.severity === "High" ? 7.5 : v.severity === "Medium" ? 4.5 : 1.5), 0);
+  return Math.round((actual / Math.max(maxPossible, 1)) * 100);
+})();
+
+// Host exposure scatter data — port count vs vulnerability count
+const hostExposure = (() => {
+  const data: { host: string; ports: number; vulns: number; risk: number }[] = [];
+  for (const h of hosts) {
+    const ports = openServices.filter(s => s.host === h.address).length;
+    const vulns = vulnerabilities.filter(v => v.host.includes(h.address)).length;
+    if (ports > 0 || vulns > 0) {
+      data.push({
+        host: h.address,
+        ports,
+        vulns,
+        risk: vulns * 3 + ports,
+      });
+    }
+  }
+  return data.sort((a, b) => b.risk - a.risk);
+})();
+
+// Remediation effort estimation
+const remediationEffort = (() => {
+  const critDays = dashboardStats.criticalCount * 3;
+  const highDays = dashboardStats.highCount * 2;
+  const medDays = dashboardStats.mediumCount * 1;
+  const lowDays = Math.ceil(dashboardStats.lowCount * 0.5);
+  return {
+    total: critDays + highDays + medDays + lowDays,
+    critical: critDays,
+    high: highDays,
+    medium: medDays,
+    low: lowDays,
+    breakdown: [
+      { name: "Critical", days: critDays, fill: "hsl(0, 72%, 51%)" },
+      { name: "High", days: highDays, fill: "hsl(38, 92%, 50%)" },
+      { name: "Medium", days: medDays, fill: "hsl(190, 90%, 50%)" },
+      { name: "Low", days: lowDays, fill: "hsl(152, 69%, 41%)" },
+    ],
+  };
+})();
+
+// Evidence quality scoring per category
+const evidenceQuality = (() => {
+  const cats = [...new Set(vulnerabilities.map(v => v.category))];
+  return cats.map(cat => {
+    const catVulns = vulnerabilities.filter(v => v.category === cat);
+    const withCve = catVulns.filter(v => v.cve).length;
+    const withEvidence = catVulns.filter(v => v.evidence.length > 10).length;
+    const withRemediation = catVulns.filter(v => v.remediation.length > 20).length;
+    return {
+      category: cat,
+      cveRate: Math.round((withCve / Math.max(catVulns.length, 1)) * 100),
+      evidenceRate: Math.round((withEvidence / Math.max(catVulns.length, 1)) * 100),
+      remediationRate: Math.round((withRemediation / Math.max(catVulns.length, 1)) * 100),
+      total: catVulns.length,
+    };
+  });
+})();
 
 const chartTooltipStyle = {
   contentStyle: {
@@ -242,14 +312,37 @@ export default function AIAnalysis() {
         </div>
       </div>
 
+      {/* Executive Risk Summary */}
+      <Card className={`border-2 ${overallRiskScore >= 70 ? "border-destructive/50 bg-destructive/5" : overallRiskScore >= 40 ? "border-warning/50 bg-warning/5" : "border-success/50 bg-success/5"}`}>
+        <CardContent className="py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className={`rounded-full p-3 ${overallRiskScore >= 70 ? "bg-destructive/20" : overallRiskScore >= 40 ? "bg-warning/20" : "bg-success/20"}`}>
+                <AlertTriangle className={`h-6 w-6 ${overallRiskScore >= 70 ? "text-destructive" : overallRiskScore >= 40 ? "text-warning" : "text-success"}`} />
+              </div>
+              <div>
+                <p className="text-base font-semibold">Overall Risk Assessment</p>
+                <p className="text-sm text-muted-foreground">
+                  {dashboardStats.criticalCount}C / {dashboardStats.highCount}H / {dashboardStats.mediumCount}M / {dashboardStats.lowCount}L across {hosts.length} hosts — {openServices.length} exposed services
+                </p>
+              </div>
+            </div>
+            <div className="text-right">
+              <p className={`text-3xl font-bold ${overallRiskScore >= 70 ? "text-destructive" : overallRiskScore >= 40 ? "text-warning" : "text-success"}`}>{overallRiskScore}%</p>
+              <p className="text-xs text-muted-foreground">CVSS-weighted risk</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Stat Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
         <Card className="bg-card border-border">
           <CardContent className="flex items-center gap-3 py-4">
             <div className="rounded-full p-2 bg-primary/10"><Brain className="h-4 w-4 text-primary" /></div>
             <div>
               <p className="text-2xl font-bold">{vulnerabilities.length}</p>
-              <p className="text-xs text-muted-foreground">Findings Analyzed</p>
+              <p className="text-[10px] text-muted-foreground">Findings</p>
             </div>
           </CardContent>
         </Card>
@@ -258,7 +351,7 @@ export default function AIAnalysis() {
             <div className="rounded-full p-2 bg-warning/10"><Target className="h-4 w-4 text-warning" /></div>
             <div>
               <p className="text-2xl font-bold">{attackPaths.length}</p>
-              <p className="text-xs text-muted-foreground">Attack Paths</p>
+              <p className="text-[10px] text-muted-foreground">Attack Paths</p>
             </div>
           </CardContent>
         </Card>
@@ -267,16 +360,34 @@ export default function AIAnalysis() {
             <div className="rounded-full p-2 bg-emerald-500/10"><Shield className="h-4 w-4 text-emerald-400" /></div>
             <div>
               <p className="text-2xl font-bold">{mitreMapping.length}</p>
-              <p className="text-xs text-muted-foreground">MITRE Techniques</p>
+              <p className="text-[10px] text-muted-foreground">MITRE Techniques</p>
             </div>
           </CardContent>
         </Card>
         <Card className="bg-card border-border">
           <CardContent className="flex items-center gap-3 py-4">
-            <div className="rounded-full p-2 bg-sky-500/10"><Gauge className="h-4 w-4 text-sky-400" /></div>
+            <div className="rounded-full p-2 bg-destructive/10"><Bug className="h-4 w-4 text-destructive" /></div>
             <div>
-              <p className="text-2xl font-bold">{tokenUsage.utilization}%</p>
-              <p className="text-xs text-muted-foreground">Context Usage</p>
+              <p className="text-2xl font-bold">{vulnerabilities.filter(v => v.cve).length}</p>
+              <p className="text-[10px] text-muted-foreground">CVEs Mapped</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="bg-card border-border">
+          <CardContent className="flex items-center gap-3 py-4">
+            <div className="rounded-full p-2 bg-sky-500/10"><Network className="h-4 w-4 text-sky-400" /></div>
+            <div>
+              <p className="text-2xl font-bold">{hostExposure.filter(h => h.vulns > 0).length}</p>
+              <p className="text-[10px] text-muted-foreground">Affected Hosts</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="bg-card border-border">
+          <CardContent className="flex items-center gap-3 py-4">
+            <div className="rounded-full p-2 bg-violet-500/10"><Gauge className="h-4 w-4 text-violet-400" /></div>
+            <div>
+              <p className="text-2xl font-bold">{remediationEffort.total}d</p>
+              <p className="text-[10px] text-muted-foreground">Est. Remediation</p>
             </div>
           </CardContent>
         </Card>
@@ -460,8 +571,9 @@ export default function AIAnalysis() {
 
       {/* Main Tabbed Output */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="analysis" className="gap-1.5 text-xs"><FileSearch className="h-3.5 w-3.5" /> Analysis</TabsTrigger>
+          <TabsTrigger value="riskmap" className="gap-1.5 text-xs"><Network className="h-3.5 w-3.5" /> Risk Map</TabsTrigger>
           <TabsTrigger value="attacks" className="gap-1.5 text-xs"><GitBranch className="h-3.5 w-3.5" /> Attack Paths</TabsTrigger>
           <TabsTrigger value="mitre" className="gap-1.5 text-xs"><Layers className="h-3.5 w-3.5" /> MITRE ATT&CK</TabsTrigger>
           <TabsTrigger value="confidence" className="gap-1.5 text-xs"><Eye className="h-3.5 w-3.5" /> Confidence</TabsTrigger>
@@ -535,6 +647,156 @@ export default function AIAnalysis() {
               </CardContent>
             </Card>
           </div>
+        </TabsContent>
+
+        {/* Risk Map Tab */}
+        <TabsContent value="riskmap" className="mt-4 space-y-4">
+          {/* Host Risk Heatmap Table */}
+          <Card className="bg-card border-border">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-base flex items-center gap-2"><Network className="h-4 w-4 text-primary" /> Host Risk Heatmap</CardTitle>
+              <span className="text-xs text-muted-foreground">{hostRiskScores.length} hosts with findings</span>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Host IP</TableHead>
+                    <TableHead className="text-center">Critical</TableHead>
+                    <TableHead className="text-center">High</TableHead>
+                    <TableHead className="text-center">Medium</TableHead>
+                    <TableHead className="text-center">Low</TableHead>
+                    <TableHead className="text-center">Risk Score</TableHead>
+                    <TableHead>Exposure</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {hostRiskScores.slice(0, 12).map((h) => {
+                    const ports = openServices.filter(s => s.host === h.host).length;
+                    return (
+                      <TableRow key={h.host}>
+                        <TableCell className="font-mono text-xs">{h.host}</TableCell>
+                        <TableCell className="text-center">
+                          {h.critical > 0 ? <Badge className="bg-destructive/15 text-destructive border-destructive/30 text-[10px]">{h.critical}</Badge> : <span className="text-muted-foreground text-xs">—</span>}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {h.high > 0 ? <Badge className="bg-warning/15 text-warning border-warning/30 text-[10px]">{h.high}</Badge> : <span className="text-muted-foreground text-xs">—</span>}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {h.medium > 0 ? <Badge className="bg-sky-500/15 text-sky-400 border-sky-500/30 text-[10px]">{h.medium}</Badge> : <span className="text-muted-foreground text-xs">—</span>}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {h.low > 0 ? <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/30 text-[10px]">{h.low}</Badge> : <span className="text-muted-foreground text-xs">—</span>}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <span className={`text-sm font-bold ${h.total >= 30 ? "text-destructive" : h.total >= 15 ? "text-warning" : "text-primary"}`}>{h.total}</span>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <Progress value={Math.min(100, (ports / 8) * 100)} className="h-1.5 w-16" />
+                            <span className="text-[10px] text-muted-foreground">{ports} ports</span>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Service Attack Surface */}
+            <Card className="bg-card border-border">
+              <CardHeader><CardTitle className="text-sm">Service Attack Surface</CardTitle></CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={serviceDistribution.slice(0, 10)} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 14%, 20%)" horizontal={false} />
+                    <XAxis type="number" tick={{ fill: "hsl(215, 12%, 55%)", fontSize: 10 }} axisLine={false} />
+                    <YAxis type="category" dataKey="service" tick={{ fill: "hsl(215, 12%, 55%)", fontSize: 10 }} axisLine={false} width={80} />
+                    <Tooltip {...chartTooltipStyle} />
+                    <Bar dataKey="count" name="Instances" fill="hsl(217, 91%, 60%)" radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+
+            {/* OS Distribution */}
+            <Card className="bg-card border-border">
+              <CardHeader><CardTitle className="text-sm">OS Vulnerability Surface</CardTitle></CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={260}>
+                  <PieChart>
+                    <Pie data={osDistribution} cx="50%" cy="50%" innerRadius={50} outerRadius={95} dataKey="value" stroke="none"
+                      label={({ name, value }) => `${name}: ${value}`}>
+                      {osDistribution.map((entry, i) => <Cell key={i} fill={entry.fill} />)}
+                    </Pie>
+                    <Tooltip {...chartTooltipStyle} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Remediation Effort Estimation */}
+            <Card className="bg-card border-border">
+              <CardHeader><CardTitle className="text-sm">Remediation Effort Estimation (person-days)</CardTitle></CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={remediationEffort.breakdown}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 14%, 20%)" />
+                    <XAxis dataKey="name" tick={{ fill: "hsl(215, 12%, 55%)", fontSize: 10 }} axisLine={false} />
+                    <YAxis tick={{ fill: "hsl(215, 12%, 55%)", fontSize: 10 }} axisLine={false} />
+                    <Tooltip {...chartTooltipStyle} />
+                    <Bar dataKey="days" name="Person-days" radius={[4, 4, 0, 0]}>
+                      {remediationEffort.breakdown.map((entry, i) => <Cell key={i} fill={entry.fill} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+                <div className="mt-3 rounded-md bg-muted/50 p-2.5 text-xs text-muted-foreground">
+                  Total estimated effort: <strong className="text-foreground">{remediationEffort.total} person-days</strong>
+                  {" "}({remediationEffort.critical}d critical + {remediationEffort.high}d high + {remediationEffort.medium}d medium + {remediationEffort.low}d low)
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Evidence Quality by Category */}
+            <Card className="bg-card border-border">
+              <CardHeader><CardTitle className="text-sm">Evidence Quality per Category</CardTitle></CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={evidenceQuality}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 14%, 20%)" />
+                    <XAxis dataKey="category" tick={{ fill: "hsl(215, 12%, 55%)", fontSize: 9 }} axisLine={false} />
+                    <YAxis domain={[0, 100]} tick={{ fill: "hsl(215, 12%, 55%)", fontSize: 10 }} axisLine={false} />
+                    <Tooltip {...chartTooltipStyle} />
+                    <Legend wrapperStyle={{ fontSize: "10px" }} />
+                    <Bar dataKey="cveRate" name="CVE Rate %" fill="hsl(262, 83%, 58%)" />
+                    <Bar dataKey="evidenceRate" name="Evidence %" fill="hsl(217, 91%, 60%)" />
+                    <Bar dataKey="remediationRate" name="Remediation %" fill="hsl(152, 69%, 41%)" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Prioritized Remediation Roadmap */}
+          <Card className="bg-card border-border">
+            <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Target className="h-4 w-4 text-primary" /> AI-Prioritized Remediation Roadmap</CardTitle></CardHeader>
+            <CardContent className="space-y-2">
+              {recommendations.slice(0, 8).map((rec, i) => (
+                <div key={i} className={`flex items-start gap-3 rounded-md border p-3 ${rec.priority === "Immediate" ? "border-destructive/20 bg-destructive/5" : rec.priority === "Short-term" ? "border-warning/20 bg-warning/5" : "border-border bg-muted/20"}`}>
+                  <Badge className={`shrink-0 mt-0.5 ${rec.priority === "Immediate" ? "bg-destructive/15 text-destructive border-destructive/30" : rec.priority === "Short-term" ? "bg-warning/15 text-warning border-warning/30" : "bg-sky-500/15 text-sky-400 border-sky-500/30"}`}>{rec.priority}</Badge>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{rec.title}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{rec.description}</p>
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {/* Attack Paths Tab */}
