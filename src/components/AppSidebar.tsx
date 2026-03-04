@@ -11,6 +11,7 @@ import {
   Wifi,
   Loader2,
   Server,
+  Workflow,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
@@ -37,6 +38,7 @@ const navItems = [
   { title: "Validation", url: "/validation", icon: CheckSquare },
   { title: "Reports", url: "/reports", icon: FileText },
   { title: "Alerts", url: "/alerts", icon: AlertTriangle },
+  { title: "Pipeline", url: "/pipeline", icon: Workflow },
 ];
 
 export function AppSidebar() {

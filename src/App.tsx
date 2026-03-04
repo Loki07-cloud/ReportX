@@ -13,6 +13,7 @@ import AIAnalysis from "./pages/AIAnalysis";
 import Validation from "./pages/Validation";
 import Reports from "./pages/Reports";
 import Alerts from "./pages/Alerts";
+import PipelineVisualization from "./pages/PipelineVisualization";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -34,6 +35,7 @@ const App = () => (
               <Route path="/validation" element={<Validation />} />
               <Route path="/reports" element={<Reports />} />
               <Route path="/alerts" element={<Alerts />} />
+              <Route path="/pipeline" element={<PipelineVisualization />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </AppLayout>
